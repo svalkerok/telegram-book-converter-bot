@@ -1,0 +1,32 @@
+[Unit]
+Description=Telegram Book Converter Bot
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=botuser
+Group=botuser
+WorkingDirectory=/opt/telegram-bot
+Environment=PRODUCTION=1
+Environment=PYTHONPATH=/opt/telegram-bot
+EnvironmentFile=/opt/telegram-bot/.env
+ExecStart=/opt/telegram-bot/venv/bin/python bot.py
+Restart=always
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=30
+
+# Ограничения ресурсов
+MemoryLimit=512M
+CPUQuota=50%
+
+# Безопасность
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/telegram-bot/logs /opt/telegram-bot/temp
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
