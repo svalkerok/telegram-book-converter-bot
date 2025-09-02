@@ -16,12 +16,12 @@ class BookConverter:
     Конвертер книг с использованием calibre ebook-convert.
     """
     
-    def __init__(self, timeout: int = 60):
+    def __init__(self, timeout: int = 300):
         """
         Инициализация конвертера.
         
         Args:
-            timeout: Таймаут конвертации в секундах
+            timeout: Таймаут конвертации в секундах (по умолчанию 5 минут)
         """
         self.timeout = timeout
     
@@ -132,7 +132,13 @@ class BookConverter:
             str(output_path)
         ] + format_params
         
+        process = None  # Инициализируем переменную для процесса
         try:
+            # Логируем начало конвертации
+            file_size = input_path.stat().st_size / (1024 * 1024)  # размер в МБ
+            logger.info(f"Начинаем конвертацию файла {input_path.name} ({file_size:.1f} МБ) в {output_format}")
+            logger.info(f"Команда: {' '.join(cmd)}")
+            
             # Запускаем процесс асинхронно
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -153,13 +159,15 @@ class BookConverter:
                 
             # Проверяем, что файл создан
             if output_path.exists():
+                output_size = output_path.stat().st_size / (1024 * 1024)  # размер в МБ
+                logger.info(f"Конвертация завершена успешно. Выходной файл: {output_path.name} ({output_size:.1f} МБ)")
                 return output_path
             else:
                 logger.error("Выходной файл не создан")
                 return None
                 
         except asyncio.TimeoutError:
-            logger.error("Таймаут конвертации")
+            logger.error(f"Таймаут конвертации ({self.timeout} сек) для файла {input_path.name} ({file_size:.1f} МБ)")
             if process:
                 process.kill()
             return None
