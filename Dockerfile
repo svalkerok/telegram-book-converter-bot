@@ -1,4 +1,4 @@
-#FROM python:3.11-slim
+FROM python:3.11-slim
 
 # Устанавливаем системные зависимости включая Ghostscript для оптимизации PDF
 RUN apt-get update && apt-get install -y \
@@ -7,16 +7,6 @@ RUN apt-get update && apt-get install -y \
     fonts-liberation \
     fonts-dejavu \
     fonts-noto \
-    && rm -rf /var/lib/apt/lists/*м официальный Python образ
-FROM python:3.11-slim
-
-# Устанавливаем системные зависимости включая Ghostscript для оптимизации PDF
-RUN apt-get update && apt-get install -y 
-    calibre 
-    ghostscript 
-    fonts-liberation 
-    fonts-dejavu 
-    fonts-noto 
     && rm -rf /var/lib/apt/lists/*
 
 # Создаем пользователя для безопасности
