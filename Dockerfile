@@ -1,40 +1,49 @@
-# Используем официальный Python образ
-FROM python:3.12-slim
+#FROM python:3.11-slim
 
-# Устанавливаем системные зависимости
+# Устанавливаем системные зависимости включая Ghostscript для оптимизации PDF
 RUN apt-get update && apt-get install -y \
     calibre \
-    wget \
-    curl \
+    ghostscript \
+    fonts-liberation \
+    fonts-dejavu \
+    fonts-noto \
+    && rm -rf /var/lib/apt/lists/*м официальный Python образ
+FROM python:3.11-slim
+
+# Устанавливаем системные зависимости включая Ghostscript для оптимизации PDF
+RUN apt-get update && apt-get install -y 
+    calibre 
+    ghostscript 
+    fonts-liberation 
+    fonts-dejavu 
+    fonts-noto 
     && rm -rf /var/lib/apt/lists/*
 
 # Создаем пользователя для безопасности
 RUN useradd --create-home --shell /bin/bash botuser
 
-# Устанавливаем рабочую директорию
+# Настраиваем рабочую директорию
 WORKDIR /app
 
-# Копируем файл зависимостей
+# Копируем зависимости
 COPY requirements.txt .
-
-# Устанавливаем Python зависимости
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем код приложения
+# Копируем исходный код
 COPY . .
 
-# Создаем директорию для временных файлов
+# Создаем директории для временных файлов и настраиваем права
 RUN mkdir -p /app/temp && chown -R botuser:botuser /app
 
-# Переключаемся на непривилегированного пользователя
+# Переключаемся на пользователя botuser
 USER botuser
 
-# Устанавливаем переменные окружения
+# Настраиваем переменные окружения
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 
-# Открываем порт (если нужен для webhooks)
+# Порт для health check
 EXPOSE 8000
 
-# Команда по умолчанию
+# Запускаем бота
 CMD ["python", "bot.py"]

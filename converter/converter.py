@@ -7,6 +7,10 @@ import re
 from pathlib import Path
 from typing import Optional
 import logging
+import time
+
+from converter.large_file_converter import LargeFileConverter
+from utils.error_manager import error_manager, ErrorCode
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +28,8 @@ class BookConverter:
             timeout: Таймаут конвертации в секундах (по умолчанию 5 минут)
         """
         self.timeout = timeout
+        self.large_file_threshold = 20  # МБ - порог для больших файлов
+        logger.info(f"BookConverter инициализирован с таймаутом {timeout} секунд")
     
     def generate_output_filename(self, input_path: Path, output_format: str) -> Path:
         """
@@ -107,37 +113,68 @@ class BookConverter:
     async def convert(
         self, 
         input_path: Path, 
-        output_format: str
+        output_format: str,
+        progress_callback: Optional[callable] = None,
+        user_id: Optional[int] = None
     ) -> Optional[Path]:
         """
-        Асинхронно конвертирует книгу в указанный формат.
+        Асинхронно конвертирует книгу в указанный формат с поддержкой больших файлов.
         
         Args:
             input_path: Путь к исходному файлу
             output_format: Целевой формат (без точки)
+            progress_callback: Функция для уведомлений о прогрессе
+            user_id: ID пользователя для логирования ошибок
             
         Returns:
             Path к конвертированному файлу или None при ошибке
         """
-        # Генерируем путь для выходного файла с улучшенным именем
-        output_path = self.generate_output_filename(input_path, output_format)
+        start_time = time.time()
         
-        # Получаем специфичные параметры для формата
-        format_params = self.get_conversion_params(output_format)
-        
-        # Команда для ebook-convert
-        cmd = [
-            'ebook-convert',
-            str(input_path),
-            str(output_path)
-        ] + format_params
-        
-        process = None  # Инициализируем переменную для процесса
         try:
-            # Логируем начало конвертации
-            file_size = input_path.stat().st_size / (1024 * 1024)  # размер в МБ
-            logger.info(f"Начинаем конвертацию файла {input_path.name} ({file_size:.1f} МБ) в {output_format}")
-            logger.info(f"Команда: {' '.join(cmd)}")
+            # Проверяем существование файла
+            if not input_path.exists():
+                error_id = error_manager.log_error(
+                    ErrorCode.FILE_NOT_FOUND,
+                    context={'input_path': str(input_path)},
+                    user_id=user_id
+                )
+                logger.error(f"Файл не найден: {input_path} (Error ID: {error_id})")
+                return None
+            
+            # Проверяем размер файла
+            file_size_mb = input_path.stat().st_size / (1024 * 1024)
+            logger.info(f"Начало конвертации файла {input_path.name} ({file_size_mb:.1f} МБ) в {output_format}")
+            
+            # Для больших файлов используем специализированный конвертер
+            if file_size_mb > self.large_file_threshold:
+                logger.info(f"Большой файл ({file_size_mb:.1f} МБ), используем оптимизированный конвертер")
+                
+                large_converter = LargeFileConverter(progress_callback)
+                return await large_converter.convert_with_progress(
+                    input_path, 
+                    output_format,
+                    timeout=1800  # 30 минут для больших файлов
+                )
+            
+            # Обычная конвертация для небольших файлов
+            if progress_callback:
+                await progress_callback(f"⚙️ Конвертирую в {output_format.upper()}...")
+            
+            # Генерируем путь для выходного файла с улучшенным именем
+            output_path = self.generate_output_filename(input_path, output_format)
+            
+            # Получаем специфичные параметры для формата
+            format_params = self.get_conversion_params(output_format)
+            
+            # Команда для ebook-convert
+            cmd = [
+                'ebook-convert',
+                str(input_path),
+                str(output_path)
+            ] + format_params
+            
+            logger.info(f"Выполнение команды: {' '.join(cmd)}")
             
             # Запускаем процесс асинхронно
             process = await asyncio.create_subprocess_exec(
@@ -153,24 +190,69 @@ class BookConverter:
             )
             
             # Проверяем код возврата
-            if process.returncode != 0:
-                logger.error(f"Ошибка конвертации: {stderr.decode()}")
-                return None
+            if process.returncode == 0:
+                duration = time.time() - start_time
+                output_size_mb = output_path.stat().st_size / (1024 * 1024) if output_path.exists() else 0
                 
-            # Проверяем, что файл создан
-            if output_path.exists():
-                output_size = output_path.stat().st_size / (1024 * 1024)  # размер в МБ
-                logger.info(f"Конвертация завершена успешно. Выходной файл: {output_path.name} ({output_size:.1f} МБ)")
+                logger.info(f"Конвертация завершена за {duration:.1f}с. Результат: {output_path.name} ({output_size_mb:.1f} МБ)")
+                
+                if progress_callback:
+                    await progress_callback(f"✅ Готово! ({output_size_mb:.1f} МБ)")
+                
                 return output_path
             else:
-                logger.error("Выходной файл не создан")
+                # Определяем тип ошибки по stderr
+                stderr_text = stderr.decode('utf-8', errors='ignore').lower()
+                
+                if 'timeout' in stderr_text or 'time' in stderr_text:
+                    error_code = ErrorCode.CONVERSION_TIMEOUT
+                elif 'memory' in stderr_text or 'out of memory' in stderr_text:
+                    error_code = ErrorCode.SYSTEM_OUT_OF_MEMORY
+                elif 'corrupt' in stderr_text or 'invalid' in stderr_text:
+                    error_code = ErrorCode.CONVERSION_CORRUPTED_FILE
+                elif 'format' in stderr_text or 'unsupported' in stderr_text:
+                    error_code = ErrorCode.CONVERSION_INVALID_FORMAT
+                else:
+                    error_code = ErrorCode.CONVERSION_FAILED
+                
+                error_id = error_manager.log_error(
+                    error_code,
+                    context={
+                        'returncode': process.returncode,
+                        'stderr': stderr_text[:500],  # Первые 500 символов
+                        'command': ' '.join(cmd)
+                    },
+                    user_id=user_id
+                )
+                
+                logger.error(f"Ошибка конвертации (код {process.returncode}): {stderr_text} (Error ID: {error_id})")
                 return None
                 
         except asyncio.TimeoutError:
-            logger.error(f"Таймаут конвертации ({self.timeout} сек) для файла {input_path.name} ({file_size:.1f} МБ)")
-            if process:
-                process.kill()
+            error_id = error_manager.log_error(
+                ErrorCode.CONVERSION_TIMEOUT,
+                context={
+                    'timeout_seconds': self.timeout,
+                    'file_size_mb': file_size_mb,
+                    'target_format': output_format
+                },
+                user_id=user_id
+            )
+            
+            logger.error(f"Таймаут конвертации ({self.timeout}s) для файла {input_path.name} (Error ID: {error_id})")
             return None
+            
         except Exception as e:
-            logger.error(f"Ошибка при конвертации: {e}")
+            error_id = error_manager.log_error(
+                ErrorCode.UNKNOWN_ERROR,
+                exception=e,
+                context={
+                    'input_path': str(input_path),
+                    'target_format': output_format,
+                    'file_size_mb': file_size_mb if 'file_size_mb' in locals() else 'unknown'
+                },
+                user_id=user_id
+            )
+            
+            logger.error(f"Неожиданная ошибка при конвертации: {e} (Error ID: {error_id})")
             return None
